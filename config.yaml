@@ -1,0 +1,71 @@
+# Configuration for Twitter Sentiment Analysis
+
+data:
+  train_path: "twitter_training.csv"
+  val_path: "twitter_validation.csv"
+  text_column: "text"
+  label_column: "sentiment"
+  drop_irrelevant: true
+  remove_duplicates: true
+  test_size: 0.2
+  random_state: 42
+
+preprocessing:
+  language: "english"
+  min_token_length: 3
+  remove_urls: true
+  remove_html: true
+  remove_punctuation: true
+  remove_digits: true
+  expand_contractions: true
+  demojize: true
+  remove_stopwords: true
+  lemmatize: true
+
+tfidf:
+  max_features: 7000
+  ngram_range: [1, 2]
+  min_df: 2
+  max_df: 0.95
+  sublinear_tf: true
+
+models:
+  logistic_regression:
+    C: 10.0
+    solver: "lbfgs"
+    penalty: "l2"
+    multi_class: "multinomial"
+    max_iter: 1000
+    random_state: 42
+  
+  naive_bayes:
+    alpha: 0.5
+  
+  ensemble:
+    voting: "soft"
+    n_jobs: -1
+
+training:
+  cv_folds: 3
+  scoring: "accuracy"
+  n_jobs: -1
+  verbose: 1
+
+paths:
+  model_dir: "saved_models"
+  best_lr_model: "best_logistic_regression.pkl"
+  best_nb_model: "best_naive_bayes.pkl"
+  best_ensemble_model: "best_ensemble.pkl"
+  preprocessor_path: "preprocessor.pkl"
+
+gradio:
+  title: "Twitter Sentiment Analysis"
+  description: "Enter a tweet to analyze its sentiment (Positive, Negative, Neutral)"
+  examples:
+    - "I absolutely love this new update! It works perfectly. 😍"
+    - "This is the worst experience I've ever had. Terrible customer service."
+    - "Just sitting here, waiting for the bus. Nothing much happening today."
+    - "@Microsoft Why do I pay for WORD when it functions so poorly? 🙄"
+    - "So excited for the new game release! Can't wait to play it!"
+  server_port: 7860
+  share: false

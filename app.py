@@ -10,9 +10,11 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import gradio as gr
+import spaces
 import yaml
 
 from inference import SentimentInferenceEngine, load_engine
+from text_preprocessor import ensure_nltk_resources
 
 logger = logging.getLogger(__name__)
 
@@ -153,9 +155,17 @@ class GradioApp:
         if not available_models:
             available_models = ["logistic", "naive_bayes", "ensemble"]
         
+        @spaces.GPU
+        def _dummy_gpu():
+            return None
+        
         with gr.Blocks(title=title, theme=gr.themes.Soft()) as demo:
             gr.Markdown(f"# {title}")
             gr.Markdown(description)
+            
+            # Hidden button bound to the dummy GPU function so ZeroGPU's scanner detects it
+            _gpu_probe = gr.Button(visible=False)
+            _gpu_probe.click(fn=_dummy_gpu)
             
             with gr.Row():
                 with gr.Column(scale=2):
@@ -297,6 +307,15 @@ def main():
         level=logging.DEBUG if args.debug else logging.INFO,
         format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
     )
+    
+    # Download NLTK data before loading models. This is essential when the app
+    # is launched directly (e.g. `python app.py`) without running training first,
+    # because loading a pickled preprocessor bypasses TextPreprocessor.__init__.
+    if not ensure_nltk_resources():
+        logger.warning(
+            "Some NLTK resources could not be downloaded. "
+            "Predictions that need them may fail."
+        )
     
     app = GradioApp(config_path=args.config)
     

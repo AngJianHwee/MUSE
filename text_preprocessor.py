@@ -6,6 +6,7 @@ Handles cleaning, normalization, and tokenization of raw tweet text.
 import logging
 import re
 import string
+import sys
 from pathlib import Path
 from typing import List, Optional, Set, Union
 
@@ -20,58 +21,84 @@ from nltk.tokenize import word_tokenize
 logger = logging.getLogger(__name__)
 
 
-def ensure_nltk_resources(resources: Optional[List[str]] = None) -> None:
-    """Download required NLTK resources if missing. Safe to call multiple times."""
-    if resources is None:
-        resources = [
-            "punkt",
-            "stopwords",
-            "wordnet",
-            "averaged_perceptron_tagger",
-        ]
-        # punkt_tab is newer and may not be available in all NLTK versions
-        # Try to download it if not found
-        try:
-            nltk.data.find("tokenizers/punkt_tab")
-            resources.append("punkt_tab")
-        except LookupError:
-            logger.info("NLTK resource 'punkt_tab' not found. Will attempt to download.")
-            try:
-                nltk.download("punkt_tab", quiet=True)
-                resources.append("punkt_tab")
-            except Exception as e:
-                logger.warning("Failed to download NLTK resource 'punkt_tab': %s", e)
-        
-        # Try to download averaged_perceptron_tagger_eng (newer NLTK versions)
-        # but fall back gracefully if not available
-        try:
-            nltk.data.find("taggers/averaged_perceptron_tagger_eng")
-            resources.append("averaged_perceptron_tagger_eng")
-        except LookupError:
-            logger.info("NLTK resource 'averaged_perceptron_tagger_eng' not found. Will attempt to download.")
-            try:
-                nltk.download("averaged_perceptron_tagger_eng", quiet=True)
-                resources.append("averaged_perceptron_tagger_eng")
-            except Exception as e:
-                logger.warning("Failed to download NLTK resource 'averaged_perceptron_tagger_eng': %s", e)
-                logger.info("Falling back to 'averaged_perceptron_tagger'")
+# All NLTK resources required by this project
+NLTK_RESOURCES = [
+    "punkt",
+    "punkt_tab",
+    "stopwords",
+    "wordnet",
+    "averaged_perceptron_tagger",
+    "averaged_perceptron_tagger_eng",
+]
 
+
+def _find_nltk_resource(resource: str) -> None:
+    """Locate an NLTK resource, raising LookupError when it is missing."""
+    if "punkt" in resource:
+        nltk.data.find(f"tokenizers/{resource}")
+    elif resource in ("stopwords", "wordnet", "omw-1.4"):
+        nltk.data.find(f"corpora/{resource}")
+    else:
+        nltk.data.find(f"taggers/{resource}")
+
+
+def ensure_nltk_resources(resources: Optional[List[str]] = None, force: bool = False) -> bool:
+    """
+    Download required NLTK resources if missing. Safe to call multiple times.
+    
+    Args:
+        resources: List of NLTK resource names to download. If None, uses default list.
+        force: If True, re-download even if resources appear to exist.
+        
+    Returns:
+        True if all resources are available, False if any failed to download.
+    """
+    if resources is None:
+        resources = NLTK_RESOURCES.copy()
+    
+    all_success = True
     
     for resource in resources:
         try:
-            if "punkt" in resource:
-                nltk.data.find(f"tokenizers/{resource}")
-            elif resource in ("stopwords", "wordnet"):
-                nltk.data.find(f"corpora/{resource}")
-            else:
-                nltk.data.find(f"taggers/{resource}")
+            if not force:
+                _find_nltk_resource(resource)
+                logger.debug("NLTK resource '%s' already available", resource)
+                continue
         except LookupError:
-            logger.info("Downloading NLTK resource: %s", resource)
-            try:
-                nltk.download(resource, quiet=False)
-            except Exception as e:
-                logger.warning("Failed to download NLTK resource '%s': %s", resource, e)
-                # Continue with other resources
+            pass  # Resource not found, will download
+        
+        # Download the resource and verify it is actually usable afterwards.
+        # nltk.download() can return False (or silently skip) on failure, so the
+        # return value alone is not enough to trust that the resource is ready.
+        logger.info("Downloading NLTK resource: %s", resource)
+        try:
+            if not nltk.download(resource, quiet=True):
+                raise RuntimeError("nltk.download() reported failure")
+            _find_nltk_resource(resource)
+            logger.info("Successfully downloaded NLTK resource: %s", resource)
+        except Exception as e:
+            logger.error("Failed to download NLTK resource '%s': %s", resource, e)
+            all_success = False
+    
+    return all_success
+
+
+def download_all_nltk_resources() -> bool:
+    """
+    Download all NLTK resources required by this project.
+    Can be called from command line or programmatically.
+    
+    Returns:
+        True if all resources downloaded successfully, False otherwise.
+    """
+    logger.info("Downloading all required NLTK resources...")
+    success = ensure_nltk_resources(NLTK_RESOURCES, force=False)
+    if success:
+        logger.info("All NLTK resources are available!")
+    else:
+        logger.warning("Some NLTK resources failed to download. Check logs above.")
+    return success
+
 
 # Fallback tokenizer in case NLTK punkt fails
 def simple_tokenize(text: str) -> List[str]:
@@ -80,6 +107,47 @@ def simple_tokenize(text: str) -> List[str]:
     # Split on whitespace and punctuation
     tokens = re.findall(r'\b\w+\b', text.lower())
     return tokens
+
+
+def main():
+    """Command-line entry point to download all NLTK resources."""
+    import argparse
+    
+    parser = argparse.ArgumentParser(
+        description="Download NLTK resources required for Twitter sentiment analysis"
+    )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Force re-download of all resources even if they exist"
+    )
+    parser.add_argument(
+        "--verbose", "-v",
+        action="store_true",
+        help="Enable verbose logging"
+    )
+    args = parser.parse_args()
+    
+    # Configure logging
+    log_level = logging.DEBUG if args.verbose else logging.INFO
+    logging.basicConfig(
+        level=log_level,
+        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    )
+    
+    logger.info("Starting NLTK resource download...")
+    success = ensure_nltk_resources(NLTK_RESOURCES, force=args.force)
+    
+    if success:
+        logger.info("✓ All NLTK resources downloaded successfully!")
+        sys.exit(0)
+    else:
+        logger.error("✗ Some NLTK resources failed to download")
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()
 
 
 class TextPreprocessor:
@@ -239,6 +307,9 @@ class TextPreprocessor:
         path = Path(path)
         if not path.exists():
             raise FileNotFoundError(f"Preprocessor file not found: {path}")
+        # Unpickling bypasses __init__, so NLTK resources must be ensured here.
+        # This is what makes `python app.py` work without running training first.
+        ensure_nltk_resources()
         preprocessor = joblib.load(path)
         logger.info("Preprocessor loaded from %s", path)
         return preprocessor

@@ -68,6 +68,6 @@ gradio:
     - "@Microsoft Why do I pay for WORD when it functions so poorly? 🙄"
     - "So excited for the new game release! Can't wait to play it!"
   server_port: 7860
-  share: true
-  debug: true
+  share: false
+  debug: false
   mcp_server: true

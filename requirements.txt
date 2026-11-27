@@ -18,6 +18,7 @@ pyyaml>=6.0.0
 
 # Web Interface
 gradio[mcp]>=4.0.0
+spaces>=0.1.0
 
 # Utilities
 tqdm>=4.65.0

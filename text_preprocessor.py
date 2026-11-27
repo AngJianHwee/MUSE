@@ -25,12 +25,38 @@ def ensure_nltk_resources(resources: Optional[List[str]] = None) -> None:
     if resources is None:
         resources = [
             "punkt",
-            "punkt_tab",
             "stopwords",
             "wordnet",
             "averaged_perceptron_tagger",
-            "averaged_perceptron_tagger_eng",
         ]
+        # punkt_tab is newer and may not be available in all NLTK versions
+        # Try to download it if not found
+        try:
+            nltk.data.find("tokenizers/punkt_tab")
+            resources.append("punkt_tab")
+        except LookupError:
+            logger.info("NLTK resource 'punkt_tab' not found. Will attempt to download.")
+            try:
+                nltk.download("punkt_tab", quiet=True)
+                resources.append("punkt_tab")
+            except Exception as e:
+                logger.warning("Failed to download NLTK resource 'punkt_tab': %s", e)
+        
+        # Try to download averaged_perceptron_tagger_eng (newer NLTK versions)
+        # but fall back gracefully if not available
+        try:
+            nltk.data.find("taggers/averaged_perceptron_tagger_eng")
+            resources.append("averaged_perceptron_tagger_eng")
+        except LookupError:
+            logger.info("NLTK resource 'averaged_perceptron_tagger_eng' not found. Will attempt to download.")
+            try:
+                nltk.download("averaged_perceptron_tagger_eng", quiet=True)
+                resources.append("averaged_perceptron_tagger_eng")
+            except Exception as e:
+                logger.warning("Failed to download NLTK resource 'averaged_perceptron_tagger_eng': %s", e)
+                logger.info("Falling back to 'averaged_perceptron_tagger'")
+
+    
     for resource in resources:
         try:
             if "punkt" in resource:
@@ -41,7 +67,19 @@ def ensure_nltk_resources(resources: Optional[List[str]] = None) -> None:
                 nltk.data.find(f"taggers/{resource}")
         except LookupError:
             logger.info("Downloading NLTK resource: %s", resource)
-            nltk.download(resource, quiet=True)
+            try:
+                nltk.download(resource, quiet=False)
+            except Exception as e:
+                logger.warning("Failed to download NLTK resource '%s': %s", resource, e)
+                # Continue with other resources
+
+# Fallback tokenizer in case NLTK punkt fails
+def simple_tokenize(text: str) -> List[str]:
+    """Simple whitespace-based tokenization as fallback."""
+    import re
+    # Split on whitespace and punctuation
+    tokens = re.findall(r'\b\w+\b', text.lower())
+    return tokens
 
 
 class TextPreprocessor:
@@ -104,7 +142,13 @@ class TextPreprocessor:
 
     def _get_wordnet_pos(self, word: str) -> str:
         """Map POS tag to the character accepted by WordNetLemmatizer."""
-        tag = nltk.pos_tag([word])[0][1][0].upper()
+        try:
+            tag = nltk.pos_tag([word])[0][1][0].upper()
+        except LookupError:
+            # Fallback if POS tagger is not available
+            logger.warning("POS tagger not available, defaulting to NOUN for word: %s", word)
+            return wordnet.NOUN
+        
         tag_dict = {
             "J": wordnet.ADJ,
             "N": wordnet.NOUN,
@@ -153,8 +197,15 @@ class TextPreprocessor:
         if self.demojize:
             text = emoji.demojize(text)
 
-        # Tokenize
-        tokens = word_tokenize(text)
+        # Tokenize with fallback
+        try:
+            tokens = word_tokenize(text)
+        except LookupError as e:
+            if "punkt_tab" in str(e):
+                logger.warning("NLTK punkt_tab not available, using fallback tokenizer")
+                tokens = simple_tokenize(text)
+            else:
+                raise
 
         # Remove stopwords
         if self.remove_stopwords:

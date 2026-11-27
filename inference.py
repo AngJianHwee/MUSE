@@ -28,6 +28,8 @@ class SentimentInferenceEngine:
         "naive_bayes": "best_naive_bayes.pkl",
         "ensemble": "best_ensemble.pkl",
     }
+    
+    PREPROCESSOR_FILE = "preprocessor.pkl"
 
     def __init__(
         self,
@@ -43,22 +45,18 @@ class SentimentInferenceEngine:
         Args:
             model_name: One of the keys in AVAILABLE_MODELS ("logistic", "naive_bayes", "ensemble")
             model_dir: Directory containing the pickled models
-            preprocessor: Optional custom preprocessor (defaults to TextPreprocessor)
+            preprocessor: Optional custom preprocessor (defaults to loading from saved preprocessor.pkl)
             model: Optional already-loaded model (skips file loading - useful for testing)
-            config_path: Optional path to config.yaml for loading preprocessor settings
+            config_path: Optional path to config.yaml (used only if preprocessor file not found)
         """
         self.model_name = model_name
         self.model_dir = Path(model_dir)
         
-        # Load preprocessor
+        # Load preprocessor - prefer saved preprocessor, fallback to config, then defaults
         if preprocessor is not None:
             self.preprocessor = preprocessor
-        elif config_path:
-            with open(config_path, "r") as f:
-                config = yaml.safe_load(f)
-            self.preprocessor = TextPreprocessor(**config["preprocessing"])
         else:
-            self.preprocessor = TextPreprocessor()
+            self.preprocessor = self._load_preprocessor(config_path)
 
         # Load model
         if model is not None:
@@ -68,7 +66,25 @@ class SentimentInferenceEngine:
             self.model = self._load_model(model_name)
 
         # Store class labels for probability mapping
-        self.classes_ = getattr(self.model, "classes_", None)
+        # For Pipeline, classes_ is on the classifier step
+        self.classes_ = self._get_model_classes()
+
+    def _load_preprocessor(self, config_path: Optional[str] = None) -> TextPreprocessor:
+        """Load preprocessor from saved file, or create from config, or use defaults."""
+        preprocessor_path = self.model_dir / self.PREPROCESSOR_FILE
+        
+        if preprocessor_path.exists():
+            logger.info("Loading preprocessor from %s", preprocessor_path)
+            return TextPreprocessor.load(preprocessor_path)
+        
+        if config_path:
+            logger.info("Preprocessor file not found, creating from config: %s", config_path)
+            with open(config_path, "r") as f:
+                config = yaml.safe_load(f)
+            return TextPreprocessor(**config["preprocessing"])
+        
+        logger.warning("No preprocessor file or config found, using defaults")
+        return TextPreprocessor()
 
     def _load_model(self, model_name: str) -> Any:
         """Load model from disk."""
@@ -87,6 +103,20 @@ class SentimentInferenceEngine:
 
         logger.info("Loading model '%s' from %s", model_name, model_path)
         return joblib.load(model_path)
+
+    def _get_model_classes(self) -> Optional[List[str]]:
+        """Extract class labels from model (handles Pipeline and direct classifiers)."""
+        # Direct classifier
+        if hasattr(self.model, "classes_"):
+            return list(self.model.classes_)
+        
+        # Pipeline - check classifier step
+        if hasattr(self.model, "named_steps"):
+            for step_name, step in self.model.named_steps.items():
+                if hasattr(step, "classes_"):
+                    return list(step.classes_)
+        
+        return None
 
     def predict(
         self, texts: Union[str, List[str]], return_probabilities: bool = True
@@ -164,7 +194,7 @@ class SentimentInferenceEngine:
         info = {
             "model_name": self.model_name,
             "model_type": type(self.model).__name__,
-            "classes": list(self.classes_) if self.classes_ is not None else None,
+            "classes": self.classes_,
         }
         
         # Add pipeline steps if it's a pipeline
@@ -188,7 +218,7 @@ def load_engine(
     Args:
         model_name: Model to load ("logistic", "naive_bayes", "ensemble")
         model_dir: Directory containing saved models
-        config_path: Path to config.yaml for preprocessor settings
+        config_path: Path to config.yaml (fallback if preprocessor.pkl not found)
         
     Returns:
         Configured SentimentInferenceEngine instance

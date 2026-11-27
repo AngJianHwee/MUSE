@@ -4,6 +4,7 @@ Provides an interactive UI for real-time sentiment prediction.
 Supports MCP (Model Context Protocol) server for tool integration.
 """
 
+import argparse
 import logging
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -20,6 +21,52 @@ def load_config(config_path: str = "config.yaml") -> Dict[str, Any]:
     """Load configuration from YAML file."""
     with open(config_path, "r") as f:
         return yaml.safe_load(f)
+
+
+# Color mapping for sentiment labels
+SENTIMENT_COLORS = {
+    "POSITIVE": "#22c55e",  # green-500
+    "NEGATIVE": "#ef4444",  # red-500
+    "NEUTRAL": "#3b82f6",   # blue-500
+    "IRRELEVANT": "#6b7280", # gray-500
+}
+
+
+def get_sentiment_color(sentiment: str) -> str:
+    """Get color for sentiment label."""
+    return SENTIMENT_COLORS.get(sentiment.upper(), "#6b7280")
+
+
+def format_colored_sentiment(sentiment: str, confidence: Optional[float] = None) -> str:
+    """Format sentiment with colored HTML for Gradio display."""
+    color = get_sentiment_color(sentiment)
+    label = sentiment.upper()
+    if confidence is not None:
+        return f'<span style="color: {color}; font-weight: bold; font-size: 1.2em;">{label}</span> <span style="color: {color}; opacity: 0.7;">({confidence:.1%})</span>'
+    return f'<span style="color: {color}; font-weight: bold; font-size: 1.2em;">{label}</span>'
+
+
+def format_probabilities_html(probabilities: Dict[str, float]) -> str:
+    """Format probabilities as colored HTML bars."""
+    if not probabilities:
+        return ""
+    
+    html_parts = []
+    for label, prob in sorted(probabilities.items(), key=lambda x: x[1], reverse=True):
+        color = get_sentiment_color(label)
+        bar_width = prob * 100
+        html_parts.append(f'''
+            <div style="margin-bottom: 8px;">
+                <div style="display: flex; justify-content: space-between; margin-bottom: 4px;">
+                    <span style="color: {color}; font-weight: 500;">{label.upper()}</span>
+                    <span style="color: {color}; font-weight: bold;">{prob:.1%}</span>
+                </div>
+                <div style="background: #e5e7eb; border-radius: 4px; height: 20px; overflow: hidden;">
+                    <div style="background: {color}; width: {bar_width}%; height: 100%; border-radius: 4px; transition: width 0.3s ease;"></div>
+                </div>
+            </div>
+        ''')
+    return "".join(html_parts)
 
 
 class GradioApp:
@@ -78,10 +125,14 @@ class GradioApp:
         # Format probabilities for display
         prob_dict = {k.upper(): v for k, v in probabilities.items()}
         
+        # Get confidence for predicted class
+        confidence = prob_dict.get(predicted, 0.0)
+        
         return {
             "predicted_sentiment": predicted,
             "cleaned_text": cleaned,
             "probabilities": prob_dict,
+            "confidence": confidence,
             "model_used": model_choice
         }
     
@@ -123,9 +174,10 @@ class GradioApp:
                     predict_btn = gr.Button("Analyze Sentiment", variant="primary", size="lg")
                 
                 with gr.Column(scale=1):
-                    predicted_label = gr.Label(
+                    # Use HTML for colored sentiment display
+                    predicted_html = gr.HTML(
                         label="Predicted Sentiment",
-                        num_top_classes=3,
+                        value="<div style='text-align: center; padding: 20px; color: #9ca3af;'>Enter text and click Analyze</div>"
                     )
             
             with gr.Row():
@@ -138,9 +190,10 @@ class GradioApp:
             
             with gr.Row():
                 with gr.Column():
-                    prob_output = gr.Label(
+                    # Use HTML for colored probability bars
+                    prob_html = gr.HTML(
                         label="Class Probabilities",
-                        num_top_classes=3,
+                        value="<div style='padding: 20px; color: #9ca3af; text-align: center;'>Probabilities will appear here</div>"
                     )
             
             # Examples
@@ -154,20 +207,33 @@ class GradioApp:
             def predict_wrapper(text, model_choice):
                 result = self.predict(text, model_choice)
                 if "error" in result:
-                    return result["error"], "", {}
-                return result["predicted_sentiment"], result["cleaned_text"], result["probabilities"]
+                    error_html = f'<div style="text-align: center; padding: 20px; color: #ef4444;">{result["error"]}</div>'
+                    return error_html, "", '<div style="padding: 20px; color: #9ca3af; text-align: center;">Error</div>'
+                
+                # Format colored sentiment
+                sentiment_html = format_colored_sentiment(
+                    result["predicted_sentiment"],
+                    result.get("confidence", 0)
+                )
+                sentiment_display = f'<div style="text-align: center; padding: 20px;">{sentiment_html}</div>'
+                
+                # Format colored probabilities
+                prob_html = format_probabilities_html(result["probabilities"])
+                prob_display = f'<div style="padding: 10px;">{prob_html}</div>' if prob_html else '<div style="padding: 20px; color: #9ca3af; text-align: center;">No probabilities available</div>'
+                
+                return sentiment_display, result["cleaned_text"], prob_display
             
             predict_btn.click(
                 fn=predict_wrapper,
                 inputs=[text_input, model_dropdown],
-                outputs=[predicted_label, cleaned_text, prob_output],
+                outputs=[predicted_html, cleaned_text, prob_html],
             )
             
             # Also trigger on Enter key
             text_input.submit(
                 fn=predict_wrapper,
                 inputs=[text_input, model_dropdown],
-                outputs=[predicted_label, cleaned_text, prob_output],
+                outputs=[predicted_html, cleaned_text, prob_html],
             )
         
         return demo
@@ -181,24 +247,71 @@ class GradioApp:
             "server_port": self.gradio_config.get("server_port", 7860),
             "share": self.gradio_config.get("share", False),
             "server_name": "0.0.0.0",
-            "mcp_server": mcp_server,
+            "mcp_server": mcp_server or self.gradio_config.get("mcp_server", False),
+            "debug": self.gradio_config.get("debug", False),
         }
         launch_kwargs.update(kwargs)
         
-        logger.info("Launching Gradio app on port %d (MCP: %s)",
-                    launch_kwargs["server_port"], launch_kwargs["mcp_server"])
+        logger.info("Launching Gradio app on port with kwargs: %s", launch_kwargs)
         demo.launch(**launch_kwargs)
+
+
+def parse_args() -> argparse.Namespace:
+    """Parse command line arguments."""
+    parser = argparse.ArgumentParser(description="Twitter Sentiment Analysis Gradio App")
+    parser.add_argument(
+        "--config",
+        type=str,
+        default="config.yaml",
+        help="Path to configuration YAML file (default: config.yaml)"
+    )
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=None,
+        help="Server port (overrides config)"
+    )
+    parser.add_argument(
+        "--share",
+        action="store_true",
+        help="Create public share link"
+    )
+    parser.add_argument(
+        "--mcp-server",
+        action="store_true",
+        help="Enable MCP server"
+    )
+    parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="Enable debug mode"
+    )
+    return parser.parse_args()
 
 
 def main():
     """Main entry point for the Gradio app."""
+    args = parse_args()
+    
     logging.basicConfig(
-        level=logging.INFO,
+        level=logging.DEBUG if args.debug else logging.INFO,
         format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
     )
     
-    app = GradioApp()
-    app.launch(mcp_server=True)
+    app = GradioApp(config_path=args.config)
+    
+    # Override config with CLI args if provided
+    launch_kwargs = {}
+    if args.port is not None:
+        launch_kwargs["server_port"] = args.port
+    if args.share:
+        launch_kwargs["share"] = True
+    if args.mcp_server:
+        launch_kwargs["mcp_server"] = True
+    if args.debug:
+        launch_kwargs["debug"] = True
+    
+    app.launch(**launch_kwargs)
 
 
 if __name__ == "__main__":

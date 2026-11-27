@@ -157,6 +157,7 @@ class GradioApp:
         
         @spaces.GPU
         def _dummy_gpu():
+            """Internal ZeroGPU probe; not exposed as an MCP tool."""
             return None
         
         with gr.Blocks(title=title, theme=gr.themes.Soft()) as demo:
@@ -165,7 +166,8 @@ class GradioApp:
             
             # Hidden button bound to the dummy GPU function so ZeroGPU's scanner detects it
             _gpu_probe = gr.Button(visible=False)
-            _gpu_probe.click(fn=_dummy_gpu)
+            # api_name=False keeps this internal helper out of the MCP tool list.
+            _gpu_probe.click(fn=_dummy_gpu, api_name=False)
             
             with gr.Row():
                 with gr.Column(scale=2):
@@ -214,7 +216,16 @@ class GradioApp:
             )
             
             # Event handlers
-            def predict_wrapper(text, model_choice):
+            def predict_wrapper(text: str, model_choice: str = "logistic") -> Tuple[str, str, str]:
+                """Classify a tweet's sentiment and return formatted results.
+
+                Args:
+                    text: The raw tweet text to analyze and classify.
+                    model_choice: The classifier model to run ('logistic', 'naive_bayes', or 'ensemble').
+
+                Returns:
+                    Tuple of (colored sentiment HTML, preprocessed text, probability bars HTML).
+                """
                 result = self.predict(text, model_choice)
                 if "error" in result:
                     error_html = f'<div style="text-align: center; padding: 20px; color: #ef4444;">{result["error"]}</div>'
@@ -233,17 +244,15 @@ class GradioApp:
                 
                 return sentiment_display, result["cleaned_text"], prob_display
             
-            predict_btn.click(
+            # One dependency = one MCP tool. Registering the same function on two
+            # events would create duplicate tools (`predict_wrapper` and
+            # `predict_wrapper_1`) with identical, empty descriptions.
+            gr.on(
+                triggers=[predict_btn.click, text_input.submit],
                 fn=predict_wrapper,
                 inputs=[text_input, model_dropdown],
                 outputs=[predicted_html, cleaned_text, prob_html],
-            )
-            
-            # Also trigger on Enter key
-            text_input.submit(
-                fn=predict_wrapper,
-                inputs=[text_input, model_dropdown],
-                outputs=[predicted_html, cleaned_text, prob_html],
+                api_name="predict_sentiment",
             )
         
         return demo

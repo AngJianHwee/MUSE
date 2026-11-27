@@ -1,0 +1,32 @@
+name: Sync to Hugging Face Space
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write  # Required for GitHub to mint the OIDC token
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install hf CLI
+        run: |
+          curl -LsSf https://hf.co/cli/install.sh | bash
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Upload to Hugging Face Space
+        env:
+          # Must include the "spaces/" prefix for Spaces!
+          HF_OIDC_RESOURCE: spaces/angjianhwee/MUSE
+        run: |
+          hf upload angjianhwee/MUSE . . \
+            --repo-type space \
+            --delete="*" \
+            --exclude=".git/*" \
+            --exclude=".github/*" \
+            --commit-message="Sync from GitHub (${GITHUB_SHA::7})"

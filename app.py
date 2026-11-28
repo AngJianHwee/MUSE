@@ -5,6 +5,7 @@ Supports MCP (Model Context Protocol) server for tool integration.
 """
 
 import argparse
+import html
 import logging
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -31,6 +32,15 @@ SENTIMENT_COLORS = {
     "NEGATIVE": "#ef4444",  # red-500
     "NEUTRAL": "#3b82f6",   # blue-500
     "IRRELEVANT": "#6b7280", # gray-500
+}
+
+# Icons used by the result card
+SENTIMENT_ICONS = {
+    "POSITIVE": "😊",
+    "NEGATIVE": "😞",
+    "NEUTRAL": "😐",
+    "IRRELEVANT": "⚪",
+    "ERROR": "⚠️",
 }
 
 
@@ -69,6 +79,251 @@ def format_probabilities_html(probabilities: Dict[str, float]) -> str:
             </div>
         ''')
     return "".join(html_parts)
+
+
+# Scoped styles for the result card. Kept as a plain string so CSS braces do not
+# need escaping inside an f-string.
+RESULT_CARD_CSS = """
+<style>
+@keyframes sc-rise {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: none; }
+}
+.sc-card {
+  position: relative;
+  overflow: hidden;
+  box-sizing: border-box;
+  border-radius: 18px;
+  padding: 22px 22px 18px;
+  background: linear-gradient(150deg, #ffffff 0%, #f8fafc 100%);
+  border: 1px solid rgba(15, 23, 42, 0.07);
+  box-shadow: 0 12px 32px rgba(15, 23, 42, 0.09), 0 2px 8px rgba(15, 23, 42, 0.04);
+  color: #0f172a;
+  font-family: inherit;
+  animation: sc-rise 0.35s ease both;
+}
+.sc-card * { box-sizing: border-box; }
+.sc-card__glow {
+  position: absolute;
+  top: -70px;
+  right: -60px;
+  width: 190px;
+  height: 190px;
+  border-radius: 50%;
+  background: var(--sc-soft);
+  pointer-events: none;
+}
+.sc-card__header {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+.sc-card__icon {
+  flex: 0 0 auto;
+  width: 54px;
+  height: 54px;
+  display: grid;
+  place-items: center;
+  font-size: 26px;
+  border-radius: 15px;
+  background: var(--sc-soft);
+  box-shadow: inset 0 0 0 1px var(--sc-soft);
+}
+.sc-card__heading { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.sc-card__eyebrow {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: #94a3b8;
+}
+.sc-card__label {
+  font-size: 25px;
+  font-weight: 800;
+  line-height: 1.1;
+  letter-spacing: -0.02em;
+  color: var(--sc-accent);
+  word-break: break-word;
+}
+.sc-card__confidence {
+  margin-left: auto;
+  flex: 0 0 auto;
+  text-align: right;
+  padding: 8px 12px;
+  border-radius: 12px;
+  background: var(--sc-soft);
+}
+.sc-card__confidence-value {
+  display: block;
+  font-size: 20px;
+  font-weight: 800;
+  line-height: 1;
+  color: var(--sc-accent);
+  font-variant-numeric: tabular-nums;
+}
+.sc-card__confidence-label {
+  display: block;
+  margin-top: 3px;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: #64748b;
+}
+.sc-card__divider {
+  height: 1px;
+  margin: 18px 0 16px;
+  background: linear-gradient(90deg, var(--sc-soft), rgba(148, 163, 184, 0.12));
+}
+.sc-card__bars { position: relative; display: flex; flex-direction: column; gap: 11px; }
+.sc-bar__top {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  margin-bottom: 5px;
+  font-size: 11px;
+}
+.sc-bar__label {
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: #475569;
+}
+.sc-bar__value { font-weight: 800; color: #0f172a; font-variant-numeric: tabular-nums; }
+.sc-bar__track {
+  height: 7px;
+  border-radius: 99px;
+  background: #eef2f7;
+  overflow: hidden;
+}
+.sc-bar__fill {
+  height: 100%;
+  border-radius: 99px;
+  transition: width 0.45s ease;
+}
+.sc-card__empty {
+  padding: 10px 0;
+  font-size: 12px;
+  font-style: italic;
+  color: #94a3b8;
+}
+.sc-card__footer {
+  position: relative;
+  margin-top: 18px;
+  padding-top: 13px;
+  border-top: 1px dashed #e2e8f0;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 7px;
+}
+.sc-card__model {
+  display: inline-block;
+  padding: 4px 10px;
+  border-radius: 99px;
+  background: #f1f5f9;
+  color: #475569;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+.sc-card__preview {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  color: #64748b;
+}
+</style>
+"""
+
+
+def format_result_card(
+    sentiment: Optional[str] = None,
+    confidence: Optional[float] = None,
+    probabilities: Optional[Dict[str, float]] = None,
+    model_used: Optional[str] = None,
+    cleaned_text: str = "",
+) -> str:
+    """Render a polished sentiment result card as HTML for the Gradio UI.
+
+    Args:
+        sentiment: Predicted label; omit to render the empty state.
+        confidence: Confidence for the predicted label.
+        probabilities: Class-to-probability mapping used for the bars.
+        model_used: Name of the model that produced the result.
+        cleaned_text: Preprocessed text shown in the card footer.
+
+    Returns:
+        HTML string containing scoped styles and the card markup.
+    """
+    is_empty = not sentiment
+    label = (sentiment or "AWAITING ANALYSIS").upper()
+
+    if label == "ERROR":
+        accent = "#ef4444"
+    elif is_empty:
+        accent = "#94a3b8"
+    else:
+        accent = get_sentiment_color(label)
+
+    soft = f"{accent}1a"
+    icon = "💬" if is_empty else SENTIMENT_ICONS.get(label, "🔍")
+    confidence_text = "—" if is_empty or confidence is None else f"{confidence:.0%}"
+
+    if is_empty:
+        bars_html = '<div class="sc-card__empty">Run an analysis to see class probabilities.</div>'
+    else:
+        rows = []
+        for cls, prob in sorted(
+            (probabilities or {}).items(), key=lambda item: float(item[1]), reverse=True
+        ):
+            value = float(prob)
+            color = get_sentiment_color(str(cls))
+            rows.append(f"""
+              <div class="sc-bar">
+                <div class="sc-bar__top">
+                  <span class="sc-bar__label">{html.escape(str(cls).upper())}</span>
+                  <span class="sc-bar__value">{value:.1%}</span>
+                </div>
+                <div class="sc-bar__track">
+                  <div class="sc-bar__fill" style="width: {max(0.0, min(1.0, value)) * 100:.1f}%; background: linear-gradient(90deg, {color}, {color}cc);"></div>
+                </div>
+              </div>
+            """)
+        bars_html = "".join(rows) or '<div class="sc-card__empty">No probabilities available.</div>'
+
+    model_text = f"Model · {model_used}" if model_used else "Model · —"
+    preview = (
+        f"&ldquo;{html.escape(cleaned_text)}&rdquo;"
+        if cleaned_text
+        else "Preprocessed text will appear here"
+    )
+
+    return RESULT_CARD_CSS + f"""
+<div class="sc-card" style="--sc-accent: {accent}; --sc-soft: {soft};">
+  <div class="sc-card__glow"></div>
+  <div class="sc-card__header">
+    <div class="sc-card__icon">{icon}</div>
+    <div class="sc-card__heading">
+      <span class="sc-card__eyebrow">Sentiment result</span>
+      <span class="sc-card__label">{html.escape(label)}</span>
+    </div>
+    <div class="sc-card__confidence">
+      <span class="sc-card__confidence-value">{confidence_text}</span>
+      <span class="sc-card__confidence-label">confidence</span>
+    </div>
+  </div>
+  <div class="sc-card__divider"></div>
+  <div class="sc-card__bars">{bars_html}</div>
+  <div class="sc-card__footer">
+    <span class="sc-card__model">{html.escape(model_text)}</span>
+    <span class="sc-card__preview">{preview}</span>
+  </div>
+</div>
+"""
 
 
 class GradioApp:
@@ -189,7 +444,7 @@ class GradioApp:
                     # Use HTML for colored sentiment display
                     predicted_html = gr.HTML(
                         label="Predicted Sentiment",
-                        value="<div style='text-align: center; padding: 20px; color: #9ca3af;'>Enter text and click Analyze</div>"
+                        value=format_result_card()
                     )
             
             with gr.Row():
@@ -224,19 +479,25 @@ class GradioApp:
                     model_choice: The classifier model to run ('logistic', 'naive_bayes', or 'ensemble').
 
                 Returns:
-                    Tuple of (colored sentiment HTML, preprocessed text, probability bars HTML).
+                    Tuple of (sentiment result card HTML, preprocessed text, probability bars HTML).
                 """
                 result = self.predict(text, model_choice)
                 if "error" in result:
-                    error_html = f'<div style="text-align: center; padding: 20px; color: #ef4444;">{result["error"]}</div>'
+                    error_html = format_result_card(
+                        sentiment="ERROR",
+                        model_used=model_choice,
+                        cleaned_text=result["error"],
+                    )
                     return error_html, "", '<div style="padding: 20px; color: #9ca3af; text-align: center;">Error</div>'
                 
-                # Format colored sentiment
-                sentiment_html = format_colored_sentiment(
-                    result["predicted_sentiment"],
-                    result.get("confidence", 0)
+                # Render the main result card on the right-hand side
+                sentiment_display = format_result_card(
+                    sentiment=result["predicted_sentiment"],
+                    confidence=result.get("confidence"),
+                    probabilities=result["probabilities"],
+                    model_used=result.get("model_used"),
+                    cleaned_text=result["cleaned_text"],
                 )
-                sentiment_display = f'<div style="text-align: center; padding: 20px;">{sentiment_html}</div>'
                 
                 # Format colored probabilities
                 prob_html = format_probabilities_html(result["probabilities"])
